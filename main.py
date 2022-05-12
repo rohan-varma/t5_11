@@ -36,10 +36,12 @@ from torch.distributed.fsdp import (
     FullStateDictConfig,
     StateDictType,
 )
+from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
 
 from torch.distributed.fsdp.wrap import (
-    default_auto_wrap_policy,
+    size_based_auto_wrap_policy,
+#    default_auto_wrap_policy,
     enable_wrap,
     wrap,
 )
@@ -110,13 +112,14 @@ def get_policies(cfg, fsdp_unit_params=1000000):
     # mixed precision -----
     if cfg.use_mixed_precision:
         bf16_ready = verify.bf16_ready
-
+        bf16_ready = False
         if bf16_ready:
             mixed_precision_policy = policies.bfSixteen
             print(f"bFloat16 enabled for mixed precision - using bfSixteen policy")
         else:
-            # mixed_precision_policy = policies.fpSixteen
-            print(f"bFloat16 support not present. Not using for mixed precision")
+            mixed_precision_policy = policies.fpSixteen
+            print("Using fp16")
+            #print(f"bFloat16 support not present. Not using for mixed precision")
 
     # wrapping policy -------
     # print(f"**overriding mp to fp16 - remove")
@@ -179,6 +182,7 @@ def train(
     epoch,
     sampler=None,
     profiler=None,
+    scaler=None
 ):
     model.train()
     ddp_loss = torch.zeros(2).to(rank)
@@ -213,8 +217,12 @@ def train(
         # print(output.keys())
         # print("##############################")
         loss = output["loss"]
+        assert scaler is not None
+        loss = scaler.scale(loss)
         loss.backward()
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
+        #optimizer.step()
         ddp_loss[0] += loss.item()
         ddp_loss[1] += len(batch)
         if rank == 0:
@@ -379,6 +387,7 @@ def fsdp_main(rank, world_size, args):
     )
     # move model to gpu
     model.to(rank)
+    scaler = ShardedGradScaler(enabled=True)
 
     if rank == 0 and cfg.print_sharding_plan:
         print(f"model ")
@@ -452,6 +461,7 @@ def fsdp_main(rank, world_size, args):
             epoch,
             sampler=sampler1,
             profiler=torch_profiler,
+            scaler=scaler
         )
 
         if cfg.run_validation:
