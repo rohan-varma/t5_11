@@ -118,9 +118,9 @@ def get_policies(cfg, fsdp_unit_params=1000000):
             mixed_precision_policy = policies.bfSixteen
             print(f"bFloat16 enabled for mixed precision - using bfSixteen policy")
         else:
-            #mixed_precision_policy = policies.fpSixteen
-            #print("Using fp16")
-            print(f"bFloat16 support not present. Not using for mixed precision")
+            mixed_precision_policy = policies.fpSixteen
+            print("Using fp16")
+            #print(f"bFloat16 support not present. Not using for mixed precision")
 
     # wrapping policy -------
     # print(f"**overriding mp to fp16 - remove")
@@ -209,23 +209,23 @@ def train(
         print("************************")
         """
         optimizer.zero_grad()
-        with torch.autograd.detect_anomaly():
-            with torch.cuda.amp.autocast(enabled=True):
-                output = model(
-                    input_ids=batch["source_ids"],
-                    attention_mask=batch["source_mask"],
-                    labels=batch["target_ids"],
-                )
-            print(output.keys())
-            # print("##############################")
-            loss = output["loss"]
-            print(f"loss {loss} {loss.dtype}")
-            assert scaler is not None
-            loss = scaler.scale(loss)
-            loss.backward()
-            scaler.step(optimizer)
-            scaler.update()
-        #optimizer.step()
+        #with torch.autograd.detect_anomaly():
+        with torch.cuda.amp.autocast(enabled=True):
+            output = model(
+                input_ids=batch["source_ids"],
+                attention_mask=batch["source_mask"],
+                labels=batch["target_ids"],
+            )
+        print(output.keys())
+        # print("##############################")
+        loss = output["loss"]
+        print(f"loss {loss} {loss.dtype}")
+        assert scaler is not None
+        loss = scaler.scale(loss)
+        loss.backward()
+        scaler.step(optimizer)
+        scaler.update()
+    #optimizer.step()
         ddp_loss[0] += loss.item()
         ddp_loss[1] += len(batch)
         if rank == 0:
@@ -391,7 +391,7 @@ def fsdp_main(rank, world_size, args):
     )
     # move model to gpu
     model.to(rank)
-    scaler = ShardedGradScaler(enabled=False)
+    scaler = ShardedGradScaler(enabled=True)
 
     if rank == 0 and cfg.print_sharding_plan:
         print(f"model ")
@@ -471,6 +471,7 @@ def fsdp_main(rank, world_size, args):
 
         if cfg.run_validation:
             test_accuracy = validation(model, rank, world_size, test_loader)
+            print(f"TEST ACC {test_accuracy}")
 
         scheduler.step()
 
