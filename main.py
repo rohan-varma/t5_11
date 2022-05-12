@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-
+from torch.cuda.amp import autocast
 # from torchvision import datasets, transforms
 
 
@@ -113,13 +113,14 @@ def get_policies(cfg, fsdp_unit_params=1000000):
     if cfg.use_mixed_precision:
         bf16_ready = verify.bf16_ready
         bf16_ready = False
+        #bf16_ready = True
         if bf16_ready:
             mixed_precision_policy = policies.bfSixteen
             print(f"bFloat16 enabled for mixed precision - using bfSixteen policy")
         else:
-            mixed_precision_policy = policies.fpSixteen
-            print("Using fp16")
-            #print(f"bFloat16 support not present. Not using for mixed precision")
+            #mixed_precision_policy = policies.fpSixteen
+            #print("Using fp16")
+            print(f"bFloat16 support not present. Not using for mixed precision")
 
     # wrapping policy -------
     # print(f"**overriding mp to fp16 - remove")
@@ -208,20 +209,22 @@ def train(
         print("************************")
         """
         optimizer.zero_grad()
-        output = model(
-            input_ids=batch["source_ids"],
-            attention_mask=batch["source_mask"],
-            labels=batch["target_ids"],
-        )
-        # print("##############################")
-        # print(output.keys())
-        # print("##############################")
-        loss = output["loss"]
-        assert scaler is not None
-        loss = scaler.scale(loss)
-        loss.backward()
-        scaler.step(optimizer)
-        scaler.update()
+        with torch.autograd.detect_anomaly():
+            with torch.cuda.amp.autocast(enabled=True):
+                output = model(
+                    input_ids=batch["source_ids"],
+                    attention_mask=batch["source_mask"],
+                    labels=batch["target_ids"],
+                )
+            print(output.keys())
+            # print("##############################")
+            loss = output["loss"]
+            print(f"loss {loss} {loss.dtype}")
+            assert scaler is not None
+            loss = scaler.scale(loss)
+            loss.backward()
+            scaler.step(optimizer)
+            scaler.update()
         #optimizer.step()
         ddp_loss[0] += loss.item()
         ddp_loss[1] += len(batch)
@@ -376,6 +379,7 @@ def fsdp_main(rank, world_size, args):
 
     # model = model.to(rank)
     # model = DDP(model)
+    cfg.activation_checkpointing = False
     if cfg.activation_checkpointing:
         model.gradient_checkpointing_enable()
         print(f"Activation checkpointing enabled\n")
@@ -387,7 +391,7 @@ def fsdp_main(rank, world_size, args):
     )
     # move model to gpu
     model.to(rank)
-    scaler = ShardedGradScaler(enabled=True)
+    scaler = ShardedGradScaler(enabled=False)
 
     if rank == 0 and cfg.print_sharding_plan:
         print(f"model ")
@@ -408,6 +412,7 @@ def fsdp_main(rank, world_size, args):
             external_file.close()
 
     lr = 0.0008
+    lr = 0.008
     gamma = 0.7
     optimizer = optim.AdamW(model.parameters(), lr=lr)
 
