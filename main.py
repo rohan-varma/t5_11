@@ -36,7 +36,7 @@ from torch.distributed.fsdp import (
     FullStateDictConfig,
     StateDictType,
 )
-from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+#from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
 
 from torch.distributed.fsdp.wrap import (
@@ -118,9 +118,9 @@ def get_policies(cfg, fsdp_unit_params=1000000):
             mixed_precision_policy = policies.bfSixteen
             print(f"bFloat16 enabled for mixed precision - using bfSixteen policy")
         else:
-            mixed_precision_policy = policies.fpSixteen
-            print("Using fp16")
-            #print(f"bFloat16 support not present. Not using for mixed precision")
+            #mixed_precision_policy = policies.fpSixteen
+            #print("Using fp16")
+            print(f"bFloat16 support not present. Not using for mixed precision")
 
     # wrapping policy -------
     # print(f"**overriding mp to fp16 - remove")
@@ -210,7 +210,7 @@ def train(
         """
         optimizer.zero_grad()
         #with torch.autograd.detect_anomaly():
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.cuda.amp.autocast(enabled=False):
             output = model(
                 input_ids=batch["source_ids"],
                 attention_mask=batch["source_mask"],
@@ -220,11 +220,12 @@ def train(
         # print("##############################")
         loss = output["loss"]
         print(f"loss {loss} {loss.dtype}")
-        assert scaler is not None
-        loss = scaler.scale(loss)
+        #assert scaler is not None
+        #loss = scaler.scale(loss)
         loss.backward()
-        scaler.step(optimizer)
-        scaler.update()
+        optimizer.step()
+        #scaler.step(optimizer)
+        #scaler.update()
     #optimizer.step()
         ddp_loss[0] += loss.item()
         ddp_loss[1] += len(batch)
@@ -384,6 +385,28 @@ def fsdp_main(rank, world_size, args):
         model.gradient_checkpointing_enable()
         print(f"Activation checkpointing enabled\n")
 
+    # wrap model in checkpointed
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper, CheckpointImpl
+#    tl = model.module.module.transformer.layers
+    #print(model)
+    nm = {}
+    for n, m in model.named_modules():
+        if isinstance(m, nn.Linear):
+            new_m = checkpoint_wrapper(m)
+            new_m = m
+            nm[n] = new_m
+            # dont setattr inside loop
+            #setattr(model, n, new_m)
+    for n, m in nm.items():
+        setattr(model, n, m)
+#tl = model.transformer.layers
+#    for layer in tl.children():
+#        for m in layer.children:
+#            new_m = checkpoint_wrapper(m)
+#            setattr(layer, m, new_m)
+#
+    print(model) # validate it is wrapped
+    return
     model = FSDP(
         model,
         auto_wrap_policy=wrapping_policy,
@@ -391,7 +414,7 @@ def fsdp_main(rank, world_size, args):
     )
     # move model to gpu
     model.to(rank)
-    scaler = ShardedGradScaler(enabled=True)
+    #scaler = ShardedGradScaler(enabled=False)
 
     if rank == 0 and cfg.print_sharding_plan:
         print(f"model ")
@@ -456,45 +479,56 @@ def fsdp_main(rank, world_size, args):
             print(f"\n--> Starting Epoch {epoch}")
 
             t0 = time.time()
-        train_accuracy = train(
-            args,
-            model,
-            rank,
-            world_size,
-            train_loader,
-            optimizer,
-            epoch,
-            sampler=sampler1,
-            profiler=torch_profiler,
-            scaler=scaler
-        )
+        # train_accuracy = train(
+        #     args,
+        #     model,
+        #     rank,
+        #     world_size,
+        #     train_loader,
+        #     optimizer,
+        #     epoch,
+        #     sampler=sampler1,
+        #     profiler=torch_profiler,
+        #     scaler=None
+        # )
 
-        if cfg.run_validation:
-            test_accuracy = validation(model, rank, world_size, test_loader)
-            print(f"TEST ACC {test_accuracy}")
+        # if cfg.run_validation:
+        #     test_accuracy = validation(model, rank, world_size, test_loader)
+        #     print(f"TEST ACC {test_accuracy}")
 
-        scheduler.step()
+        # scheduler.step()
 
-        if rank == 0:
+        # if rank == 0:
 
-            dur.append(time.time() - t0)
-            train_acc_tracking.append(train_accuracy.item())
+        #     dur.append(time.time() - t0)
+        #     train_acc_tracking.append(train_accuracy.item())
 
-            if cfg.run_validation:
-                val_acc_tracking.append(test_accuracy.item())
+        #     if cfg.run_validation:
+        #         val_acc_tracking.append(test_accuracy.item())
 
-            if cfg.track_memory:
-                mem_alloc_tracker.append(torch.cuda.memory_allocated())
-                mem_reserved_tracker.append(torch.cuda.memory_reserved())
+        #     if cfg.track_memory:
+        #         mem_alloc_tracker.append(torch.cuda.memory_allocated())
+        #         mem_reserved_tracker.append(torch.cuda.memory_reserved())
 
         if cfg.save_model:
-            save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-            with FSDP.state_dict_type(
-                model, StateDictType.FULL_STATE_DICT, save_policy
-            ):
-                cpu_state = model.state_dict()
+            # save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+            # with FSDP.state_dict_type(
+            #     model, StateDictType.FULL_STATE_DICT, save_policy
+            # ):
+            cpu_state = model.state_dict()
+            print("entire state dict done")
             # states = model.state_dict()
             print(f"saving process: rank {rank}  done w state_dict")
+            from copy import deepcopy
+            s = deepcopy(cpu_state)
+            dist.barrier()
+            model_new = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            model_new = FSDP(model_new, auto_wrap_policy=wrapping_policy, mixed_precision=mp_policy)
+            model_new.to(rank)
+            model_new.load_state_dict(s)
+            dist.barrier()
+            print(" == done with load ==")
+            exit(0)
             # dist.barrier()
             # print(f"rank {rank}  done w 2nd barrier")
 
