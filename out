@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/fsx/users/rvarm1/rvarm1/repos/t5_11/main.py", line 5, in <module>
+    from datasets_grammar.grammar_dataset import grammar
+  File "/fsx/users/rvarm1/rvarm1/repos/t5_11/datasets_grammar/__init__.py", line 1, in <module>
+    from .grammar_dataset import get_dataset
+  File "/fsx/users/rvarm1/rvarm1/repos/t5_11/datasets_grammar/grammar_dataset.py", line 16, in <module>
+    import torch
+  File "/fsx/users/rvarm1/rvarm1/repos/pytorch/torch/__init__.py", line 29, in <module>
+    from .torch_version import __version__ as __version__
+  File "/fsx/users/rvarm1/rvarm1/repos/pytorch/torch/torch_version.py", line 2, in <module>
+    from .version import __version__ as internal_version
+ModuleNotFoundError: No module named 'torch.version'
